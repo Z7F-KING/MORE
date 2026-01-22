@@ -1,0 +1,1941 @@
+-- سكربت مستر v4.5 Plus - نسخة مصغرة
+local Players = game:GetService("Players")
+local TCS = game:GetService("TextChatService")
+local VIM = game:GetService("VirtualInputManager")
+local Workspace = game:GetService("Workspace")
+local player = Players.LocalPlayer
+
+-- متغيرات النظام
+local AntiAFK, NoChat, AntiCopyActive, ChatSpamActive, CommandSpamActive = false, false, false, false, false
+local BangActive, HeadBangActive, CopyCommandsActive, HangCommandsActive = false, false, false, false
+local SelectedPlayer, afkConnection, spamTasks, bangTask, headbangTask = nil, nil, {}, nil, nil
+local ViewTarget, PlayerLeaveCounts, MembershipActive, SelectedPlayerMembership, LastKneelState = nil, {}, false, nil, {}
+local AntiBangActive, AntiBangLoopActive, AntiBangLoopTask, Chair1Active, Chair2Active, AntiKillActive = false, false, nil, false, false, false
+local Chair1OriginalPosition, Chair2OriginalPosition, AntiKillOriginalPosition = nil, nil, nil
+local ScriptStartTime = tick()
+local BangOriginalPosition, HeadBangOriginalPosition = nil, nil
+local BangSpeed, BangDistance, BangHeight, BangOscillation = 1.5, 200, 0, 1.5
+local HeadBangSpeed, HeadBangDistance, HeadBangHeight, HeadBangOscillation = 1.5, 200, 0, 1.5
+local CommandSpamSpeed = 1.0
+local AntiBangLocations = {
+    CFrame.new(2963, -132, 4060),
+    CFrame.new(-4496, -1313, -245),
+    CFrame.new(1099, -955, -3309)
+}
+
+-- متغيرات عداد مستر
+local MasterCounterGUI = nil
+local MasterCounterOpen = false
+local MasterCounterSelectedPlayers = {}
+local MasterCounterFrame = nil
+
+-- وظائف أساسية
+local function ShowNotification(title, msg)
+    -- إزالة جميع الإشعارات الجانبية باستثناء إشعارات خروج اللاعبين
+    -- سنترك فقط الإشعارات الأساسية
+    if title ~= "خرج اللاعب" then
+        return
+    end
+    
+    local notification = Instance.new("ScreenGui", game.CoreGui)
+    notification.Name = "Notify"
+    local frame = Instance.new("Frame", notification)
+    frame.Size = UDim2.new(0, 300, 0, 100)
+    frame.Position = UDim2.new(0.7, 0, 0.1, 0)
+    frame.BackgroundColor3 = Color3.fromRGB(30, 35, 45)
+    Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+    local titleLabel = Instance.new("TextLabel", frame)
+    titleLabel.Size = UDim2.new(1, -10, 0, 30)
+    titleLabel.Position = UDim2.new(0, 5, 0, 5)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+    titleLabel.TextSize = 16
+    titleLabel.Font = Enum.Font.GothamBold
+    local msgLabel = Instance.new("TextLabel", frame)
+    msgLabel.Size = UDim2.new(1, -10, 0, 50)
+    msgLabel.Position = UDim2.new(0, 5, 0, 35)
+    msgLabel.BackgroundTransparency = 1
+    msgLabel.Text = msg
+    msgLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    msgLabel.TextSize = 12
+    msgLabel.Font = Enum.Font.Gotham
+    msgLabel.TextWrapped = true
+    task.delay(5, function() notification:Destroy() end)
+end
+
+local function GetUptimeString()
+    local totalSeconds = math.floor(tick() - ScriptStartTime)
+    local days = math.floor(totalSeconds / 86400)
+    local hours = math.floor((totalSeconds % 86400) / 3600)
+    local minutes = math.floor((totalSeconds % 3600) / 60)
+    local seconds = totalSeconds % 60
+    local parts = {}
+    if days > 0 then table.insert(parts, days .. " يوم") end
+    if hours > 0 then table.insert(parts, hours .. " ساعة") end
+    if minutes > 0 then table.insert(parts, minutes .. " دقيقة") end
+    table.insert(parts, seconds .. " ثانية")
+    return table.concat(parts, " ")
+end
+
+local function ExecuteCommand(cmd)
+    if cmd and cmd ~= "" then
+        local success = pcall(function()
+            game:GetService("ReplicatedStorage").HDAdminHDClient.Signals.RequestCommandSilent:InvokeServer(cmd)
+        end)
+        return success
+    end
+    return false
+end
+
+local function IsNANPlayer(targetPlayer)
+    return targetPlayer and targetPlayer.Name and targetPlayer.Name:lower():sub(1, 3) == "nan"
+end
+
+local function FindPlayer(searchTerm)
+    local foundPlayers = {}
+    for _, targetPlayer in pairs(Players:GetPlayers()) do
+        if targetPlayer ~= player then
+            local searchLower = searchTerm:lower()
+            local nameLower = targetPlayer.Name:lower()
+            local displayNameLower = targetPlayer.DisplayName:lower()
+            if nameLower:find(searchLower, 1, true) or displayNameLower:find(searchLower, 1, true) or tostring(targetPlayer.UserId):find(searchTerm, 1, true) then
+                table.insert(foundPlayers, targetPlayer)
+            end
+        end
+    end
+    return foundPlayers
+end
+
+local function GetPlayerInfo(targetPlayer)
+    if not targetPlayer then return "لم يتم تحديد لاعب" end
+    local count = PlayerLeaveCounts[targetPlayer.UserId] or 0
+    local info = "👤 الاسم: " .. targetPlayer.Name .. "\n🎭 العرض: " .. targetPlayer.DisplayName .. "\n🆔 ID: " .. tostring(targetPlayer.UserId)
+    if IsNANPlayer(targetPlayer) then
+        info = info .. "\n\n⚠️ 🚫 تحذير: هذا اللاعب NAN!\n❌ لا يمكنك استخدام الأوامر انسخ عليه و علقه!\n✅ يمكنك استخدام باقي الأوامر"
+    end
+    if count > 0 then info = info .. "\n\n🚫 هروب: " .. count .. " مرة" end
+    return info
+end
+
+local function StartView(targetPlayer)
+    if ViewTarget == targetPlayer then return end
+    if ViewTarget then Workspace.CurrentCamera.CameraSubject = player.Character end
+    ViewTarget = targetPlayer
+    task.spawn(function()
+        while ViewTarget and ViewTarget.Parent and ViewTarget.Character do
+            pcall(function()
+                local targetRoot = ViewTarget.Character:FindFirstChild("HumanoidRootPart")
+                if targetRoot then
+                    Workspace.CurrentCamera.CameraSubject = ViewTarget.Character
+                    Workspace.CurrentCamera.CFrame = CFrame.new(targetRoot.Position + targetRoot.CFrame.LookVector * 10, targetRoot.Position)
+                end
+            end)
+            task.wait(0.1)
+        end
+        if ViewTarget == targetPlayer then
+            Workspace.CurrentCamera.CameraSubject = player.Character
+            ViewTarget = nil
+        end
+    end)
+end
+
+local function StopView()
+    if ViewTarget then
+        Workspace.CurrentCamera.CameraSubject = player.Character
+        ViewTarget = nil
+    end
+end
+
+local danceAnimationTrack = nil
+local function PlayDanceAnimation(speed)
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        local animator = humanoid:FindFirstChildOfClass("Animator")
+        if animator then
+            if danceAnimationTrack then danceAnimationTrack:Stop() end
+            local animation = Instance.new("Animation")
+            animation.AnimationId = "rbxassetid://5918726674"
+            danceAnimationTrack = animator:LoadAnimation(animation)
+            danceAnimationTrack:Play()
+            danceAnimationTrack:AdjustSpeed(speed or 1.0)
+        end
+    end
+end
+
+local function StopDanceAnimation()
+    if danceAnimationTrack then
+        danceAnimationTrack:Stop()
+        danceAnimationTrack = nil
+    end
+end
+
+local function StartBang(targetPlayer)
+    if BangActive or not targetPlayer then return end
+    BangActive = true
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if playerRoot then BangOriginalPosition = playerRoot.CFrame end
+    PlayDanceAnimation(BangSpeed)
+    local oscillationTime = 0
+    bangTask = task.spawn(function()
+        while BangActive and targetPlayer and targetPlayer.Character do
+            pcall(function()
+                local targetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                if targetRoot and playerRoot then
+                    local baseDistance = math.clamp(BangDistance, 1, 10000) / 100
+                    local heightOffset = math.clamp(BangHeight, 0, 10000) / 100
+                    local oscillationMultiplier = math.clamp(BangOscillation, 1, 10)
+                    oscillationTime = oscillationTime + (0.1 * BangSpeed)
+                    local oscillation = math.sin(oscillationTime) * baseDistance * oscillationMultiplier * 0.5
+                    local lookVector = targetRoot.CFrame.LookVector
+                    local behindPosition = targetRoot.Position - (lookVector * (baseDistance + oscillation))
+                    local maxDistance = 5
+                    if (behindPosition - targetRoot.Position).Magnitude > maxDistance then
+                        behindPosition = targetRoot.Position - (lookVector * maxDistance)
+                    end
+                    local finalPosition = behindPosition + Vector3.new(0, heightOffset, 0)
+                    playerRoot.CFrame = CFrame.new(finalPosition, targetRoot.Position)
+                    if danceAnimationTrack then
+                        danceAnimationTrack:AdjustSpeed(math.clamp(BangSpeed * (1 + oscillationMultiplier * 0.2), 1, 15))
+                    end
+                end
+            end)
+            task.wait(0.01)
+        end
+        StopDanceAnimation()
+        BangActive = false
+        if BangOriginalPosition then
+            local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if playerRoot then playerRoot.CFrame = BangOriginalPosition end
+        end
+    end)
+end
+
+local function StartHeadBang(targetPlayer)
+    if HeadBangActive or not targetPlayer then return end
+    HeadBangActive = true
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if playerRoot then HeadBangOriginalPosition = playerRoot.CFrame end
+    PlayDanceAnimation(HeadBangSpeed)
+    local oscillationTime = 0
+    headbangTask = task.spawn(function()
+        while HeadBangActive and targetPlayer and targetPlayer.Character do
+            pcall(function()
+                local targetRoot = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+                local targetHead = targetPlayer.Character:FindFirstChild("Head")
+                local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                if targetRoot and playerRoot then
+                    local baseDistance = math.clamp(HeadBangDistance, 1, 10000) / 100
+                    local heightOffset = math.clamp(HeadBangHeight, 0, 10000) / 100
+                    local oscillationMultiplier = math.clamp(HeadBangOscillation, 1, 10)
+                    oscillationTime = oscillationTime + (0.1 * HeadBangSpeed)
+                    local oscillation = math.sin(oscillationTime) * baseDistance * oscillationMultiplier * 0.5
+                    local headPos = targetHead and targetHead.Position or targetRoot.Position + Vector3.new(0, 1.5, 0)
+                    local lookVector = targetRoot.CFrame.LookVector
+                    local inFrontPosition = headPos + (lookVector * (baseDistance + oscillation))
+                    local maxDistance = 5
+                    if (inFrontPosition - headPos).Magnitude > maxDistance then
+                        inFrontPosition = headPos + (lookVector * maxDistance)
+                    end
+                    local finalPosition = inFrontPosition + Vector3.new(0, heightOffset, 0)
+                    playerRoot.CFrame = CFrame.new(finalPosition, headPos)
+                    if danceAnimationTrack then
+                        danceAnimationTrack:AdjustSpeed(math.clamp(HeadBangSpeed * (1 + oscillationMultiplier * 0.2), 1, 15))
+                    end
+                end
+            end)
+            task.wait(0.01)
+        end
+        StopDanceAnimation()
+        HeadBangActive = false
+        if HeadBangOriginalPosition then
+            local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if playerRoot then playerRoot.CFrame = HeadBangOriginalPosition end
+        end
+    end)
+end
+
+local function StopBang()
+    BangActive, HeadBangActive = false, false
+    if bangTask then bangTask = nil end
+    if headbangTask then headbangTask = nil end
+    StopDanceAnimation()
+    if BangOriginalPosition then
+        local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if playerRoot then playerRoot.CFrame = BangOriginalPosition end
+    end
+    if HeadBangOriginalPosition then
+        local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if playerRoot then playerRoot.CFrame = HeadBangOriginalPosition end
+    end
+end
+
+local function EnableAntiAFK()
+    if AntiAFK then return end
+    AntiAFK = true
+    afkConnection = player.Idled:Connect(function()
+        VIM:SendKeyEvent(true, "W", false, game)
+        task.wait(0.1)
+        VIM:SendKeyEvent(false, "W", false, game)
+    end)
+    task.spawn(function()
+        while AntiAFK do
+            task.wait(60)
+            pcall(function()
+                local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+                if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+            end)
+        end
+    end)
+end
+
+local function DisableAntiAFK()
+    AntiAFK = false
+    if afkConnection then
+        afkConnection:Disconnect()
+        afkConnection = nil
+    end
+end
+
+local function StartAntiCopy()
+    if AntiCopyActive then return end
+    AntiCopyActive = true
+    local taskId = #spamTasks + 1
+    spamTasks[taskId] = task.spawn(function()
+        local commands = {"!char", "!unchar", "!unaura"}
+        local currentIndex = 1
+        while AntiCopyActive do
+            ExecuteCommand(commands[currentIndex])
+            currentIndex = currentIndex + 1
+            if currentIndex > #commands then currentIndex = 1 end
+            task.wait(1)
+        end
+        spamTasks[taskId] = nil
+    end)
+end
+
+local function StopAntiCopy()
+    AntiCopyActive = false
+end
+
+local function AntiBangFunction(targetPlayer)
+    if not targetPlayer or AntiBangActive then return end
+    AntiBangActive = true
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then AntiBangActive = false return end
+    local originalPosition = playerRoot.CFrame
+    task.spawn(function()
+        playerRoot.CFrame = playerRoot.CFrame + Vector3.new(0, 1000, 0)
+        task.wait(3)
+        playerRoot.CFrame = originalPosition
+        AntiBangActive = false
+    end)
+end
+
+local function StartCopyCommands(targetPlayer)
+    if not targetPlayer or CopyCommandsActive then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    CopyCommandsActive = true
+    local targetName = targetPlayer.Name
+    local combinedCommand = "!size " .. targetName .. " 3 !thin " .. targetName .. " !neon " .. targetName .. " !color " .. targetName .. " pk !aura " .. targetName .. " !titlepk " .. targetName .. " مستر شق هذا شخص"
+    local taskId = #spamTasks + 1
+    spamTasks[taskId] = task.spawn(function()
+        while CopyCommandsActive do
+            ExecuteCommand(combinedCommand)
+            task.wait(3)
+        end
+        spamTasks[taskId] = nil
+    end)
+end
+
+local function StopCopyCommands()
+    CopyCommandsActive = false
+end
+
+local function StartHangCommands(targetPlayer)
+    if not targetPlayer or HangCommandsActive then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    HangCommandsActive = true
+    local targetName = targetPlayer.Name
+    local combinedCommand = "!re " .. targetName .. " !aura " .. targetName
+    local taskId = #spamTasks + 1
+    spamTasks[taskId] = task.spawn(function()
+        while HangCommandsActive do
+            ExecuteCommand(combinedCommand)
+            task.wait(1)
+        end
+        spamTasks[taskId] = nil
+    end)
+end
+
+local function StopHangCommands()
+    HangCommandsActive = false
+end
+
+local function StartNashkhNaf(targetPlayer)
+    if not targetPlayer then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    local targetName = targetPlayer.Name
+    local commands = {"!re " .. targetName, "!nv " .. targetName, "!logs " .. targetName}
+    task.spawn(function()
+        for i = 1, 30 do
+            for _, cmd in ipairs(commands) do
+                ExecuteCommand(cmd)
+                task.wait(0.0003)
+            end
+        end
+    end)
+end
+
+local function ToggleKneel(targetPlayer)
+    if not targetPlayer then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    local targetName = targetPlayer.Name
+    if LastKneelState[targetName] then
+        ExecuteCommand("!unsit " .. targetName)
+        LastKneelState[targetName] = false
+    else
+        ExecuteCommand("!bring " .. targetName)
+        task.wait(0.5)
+        ExecuteCommand("!sit " .. targetName)
+        LastKneelState[targetName] = true
+        pcall(function() TCS.TextChannels.RBXGeneral:SendAsync("🎯 اه انا خضعت لك يا " .. player.Name) end)
+    end
+end
+
+local function ControlChat(targetPlayer, message)
+    if not targetPlayer or not message or message == "" then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    ExecuteCommand("!say " .. targetPlayer.Name .. " " .. message)
+    pcall(function() TCS.TextChannels.RBXGeneral:SendAsync(targetPlayer.Name .. ": " .. message) end)
+end
+
+local function KickPlayer(targetPlayer, reason)
+    if not targetPlayer then return end
+    if IsNANPlayer(targetPlayer) then
+        if playerInfoLabel then playerInfoLabel.Text = GetPlayerInfo(targetPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" end
+        return
+    end
+    local kickReason = reason or "طرد من سكربت مستر"
+    ExecuteCommand("!kick " .. targetPlayer.Name .. " " .. kickReason)
+    pcall(function() TCS.TextChannels.RBXGeneral:SendAsync("🎯 " .. targetPlayer.Name .. " تم طرده") end)
+end
+
+local function SamlaCommand()
+    local commands = {"!char me ardaomeroglucooj", "!size me 3", "!neon me"}
+    for _, cmd in ipairs(commands) do
+        ExecuteCommand(cmd)
+        task.wait(0.1)
+    end
+end
+
+local function IsCuffTool(tool)
+    if not tool:IsA("Tool") then return false end
+    local name = tool.Name:lower()
+    local keyWords = {"كلب", "cuff", "hand", "arrest", "كلبشه", "كلبشة", "handcuff"}
+    for _, word in ipairs(keyWords) do
+        if string.find(name, word:lower()) then return true end
+    end
+    return false
+end
+
+local function GetAllCuffs()
+    local cuffs = {}
+    for _, item in ipairs(player.Backpack:GetChildren()) do
+        if IsCuffTool(item) then table.insert(cuffs, item) end
+    end
+    for _, item in ipairs(player.Character:GetChildren()) do
+        if IsCuffTool(item) then table.insert(cuffs, item) end
+    end
+    return cuffs
+end
+
+local function GetRandomCuff()
+    local cuffs = GetAllCuffs()
+    if #cuffs == 0 then return nil end
+    return cuffs[math.random(1, #cuffs)]
+end
+
+local function CuffPlayer(targetPlayer)
+    if not targetPlayer then ShowNotification("❌ خطأ", "لم يتم تحديد لاعب!") return false end
+    local target = Players:FindFirstChild(targetPlayer.Name)
+    if not target or not target.Character then ShowNotification("❌ خطأ", "اللاعب غير موجود!") return false end
+    local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+    if not targetHRP then ShowNotification("❌ خطأ", "اللاعب ليس لديه HumanoidRootPart!") return false end
+    local cuff = GetRandomCuff()
+    if not cuff then ShowNotification("❌ خطأ", "لا توجد كلبشات لديك!") return false end
+    local success, errorMsg = pcall(function()
+        cuff.Parent = player.Character
+        for _, obj in ipairs(cuff:GetDescendants()) do
+            if obj:IsA("RemoteEvent") then
+                obj:FireServer(targetHRP)
+                return true
+            end
+        end
+        ShowNotification("❌ خطأ", "لم يتم العثور على RemoteEvent في الكلبشة!")
+        return false
+    end)
+    if not success then ShowNotification("❌ خطأ", "فشل في كبش اللاعب: " .. tostring(errorMsg)) return false end
+    return true
+end
+
+local function ThrowToVoid(targetPlayer)
+    if not targetPlayer then ShowNotification("❌ خطأ", "لم يتم تحديد لاعب!") return false end
+    local cuffed = CuffPlayer(targetPlayer)
+    if not cuffed then return false end
+    task.wait(0.5)
+    local target = Players:FindFirstChild(targetPlayer.Name)
+    if target and target.Character then
+        local targetHRP = target.Character:FindFirstChild("HumanoidRootPart")
+        if targetHRP then
+            targetHRP.CFrame = CFrame.new(2147483648, 944401, -2)
+            ShowNotification("🌀 إرميه بالڤويد", "تم كبش اللاعب وإرساله للڤويد!")
+            return true
+        end
+    end
+    ShowNotification("❌ خطأ", "فشل في إرسال اللاعب للڤويد!")
+    return false
+end
+
+-- تعديل دالة كرسي مع القفز
+local function TeleportToLocationAndBack(cframe, waitTime)
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then return end
+    local originalPosition = playerRoot.CFrame
+    playerRoot.CFrame = cframe
+    -- جعل اللاعب يقفز
+    local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+    task.wait(waitTime)
+    playerRoot.CFrame = originalPosition
+end
+
+local function ToggleTeleportLocation(cframe, isActive, originalPositionVarName, button)
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not playerRoot then return isActive end
+    if not isActive then
+        if originalPositionVarName == "AntiKillOriginalPosition" then
+            AntiKillOriginalPosition = playerRoot.CFrame
+        end
+        playerRoot.CFrame = cframe
+        isActive = true
+        button.Text = button.Text .. " 🔄"
+        button.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    else
+        local originalPos = AntiKillOriginalPosition
+        AntiKillOriginalPosition = nil
+        if originalPos then playerRoot.CFrame = originalPos end
+        isActive = false
+        button.Text = button.Text:gsub(" 🔄", "")
+        button.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    end
+    return isActive
+end
+
+-- دالة إنشاء عداد مستر GUI
+local function CreateMasterCounterGUI()
+    if MasterCounterGUI and MasterCounterGUI.Parent then
+        MasterCounterGUI:Destroy()
+    end
+    
+    MasterCounterGUI = Instance.new("ScreenGui", game.CoreGui)
+    MasterCounterGUI.Name = "MasterCounterGUI"
+    MasterCounterGUI.Enabled = false
+    
+    MasterCounterFrame = Instance.new("Frame", MasterCounterGUI)
+    MasterCounterFrame.Size = UDim2.new(0, 350, 0, 500)
+    MasterCounterFrame.Position = UDim2.new(0.5, -175, 0.5, -250)
+    MasterCounterFrame.BackgroundColor3 = Color3.fromRGB(20, 25, 35)
+    MasterCounterFrame.Active = true
+    MasterCounterFrame.Draggable = true
+    Instance.new("UICorner", MasterCounterFrame).CornerRadius = UDim.new(0, 10)
+    
+    local titleBar = Instance.new("Frame", MasterCounterFrame)
+    titleBar.Size = UDim2.new(1, 0, 0, 40)
+    titleBar.BackgroundColor3 = Color3.fromRGB(30, 35, 45)
+    Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+    
+    local titleLabel = Instance.new("TextLabel", titleBar)
+    titleLabel.Size = UDim2.new(1, 0, 1, 0)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = "عداد مستر"
+    titleLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
+    titleLabel.TextSize = 18
+    titleLabel.Font = Enum.Font.GothamBold
+    
+    local closeButton = Instance.new("TextButton", titleBar)
+    closeButton.Size = UDim2.new(0, 30, 0, 30)
+    closeButton.Position = UDim2.new(0.9, 0, 0.05, 0)
+    closeButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+    closeButton.Text = "✕"
+    closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    closeButton.TextSize = 16
+    closeButton.Font = Enum.Font.GothamBold
+    Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 6)
+    
+    closeButton.MouseButton1Click:Connect(function()
+        MasterCounterGUI.Enabled = false
+        MasterCounterOpen = false
+    end)
+    
+    -- حقل البحث
+    local searchBox = Instance.new("TextBox", MasterCounterFrame)
+    searchBox.Size = UDim2.new(0.7, -10, 0, 35)
+    searchBox.Position = UDim2.new(0, 10, 0, 50)
+    searchBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+    searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchBox.PlaceholderText = "ابحث عن لاعب"
+    searchBox.Text = ""
+    searchBox.TextSize = 13
+    searchBox.Font = Enum.Font.Gotham
+    Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+    
+    local searchButton = Instance.new("TextButton", MasterCounterFrame)
+    searchButton.Size = UDim2.new(0.25, -10, 0, 35)
+    searchButton.Position = UDim2.new(0.75, 0, 0, 50)
+    searchButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+    searchButton.Text = "➕ إضافة"
+    searchButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+    searchButton.TextSize = 13
+    searchButton.Font = Enum.Font.GothamBold
+    Instance.new("UICorner", searchButton).CornerRadius = UDim.new(0, 6)
+    
+    -- قائمة اللاعبين المحددين
+    local selectedTitle = Instance.new("TextLabel", MasterCounterFrame)
+    selectedTitle.Size = UDim2.new(1, -20, 0, 25)
+    selectedTitle.Position = UDim2.new(0, 10, 0, 95)
+    selectedTitle.BackgroundTransparency = 1
+    selectedTitle.Text = "اللاعبون المحددون:"
+    selectedTitle.TextColor3 = Color3.fromRGB(200, 200, 255)
+    selectedTitle.TextSize = 14
+    selectedTitle.Font = Enum.Font.GothamBold
+    selectedTitle.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local playersScroll = Instance.new("ScrollingFrame", MasterCounterFrame)
+    playersScroll.Size = UDim2.new(1, -20, 0, 350)
+    playersScroll.Position = UDim2.new(0, 10, 0, 125)
+    playersScroll.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
+    playersScroll.ScrollBarThickness = 8
+    playersScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Instance.new("UICorner", playersScroll).CornerRadius = UDim.new(0, 6)
+    
+    local layout = Instance.new("UIListLayout", playersScroll)
+    layout.Padding = UDim.new(0, 5)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    
+    -- دالة تحديث قائمة اللاعبين المحددين
+    local function UpdateSelectedPlayersList()
+        for _, child in ipairs(playersScroll:GetChildren()) do
+            if child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+        
+        local playerCount = 0
+        for userId, playerData in pairs(MasterCounterSelectedPlayers) do
+            playerCount = playerCount + 1
+            local playerFrame = Instance.new("Frame", playersScroll)
+            playerFrame.Size = UDim2.new(1, -10, 0, 60)
+            playerFrame.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+            playerFrame.LayoutOrder = playerCount
+            Instance.new("UICorner", playerFrame).CornerRadius = UDim.new(0, 6)
+            
+            -- صورة اللاعب
+            local playerThumbnail = Instance.new("ImageLabel", playerFrame)
+            playerThumbnail.Size = UDim2.new(0, 50, 0, 50)
+            playerThumbnail.Position = UDim2.new(0, 5, 0, 5)
+            playerThumbnail.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+            Instance.new("UICorner", playerThumbnail).CornerRadius = UDim.new(0, 6)
+            
+            -- معلومات اللاعب
+            local playerName = Instance.new("TextLabel", playerFrame)
+            playerName.Size = UDim2.new(0.5, 0, 0, 25)
+            playerName.Position = UDim2.new(0.2, 0, 0, 5)
+            playerName.BackgroundTransparency = 1
+            playerName.Text = playerData.Name
+            playerName.TextColor3 = Color3.fromRGB(255, 255, 255)
+            playerName.TextSize = 14
+            playerName.Font = Enum.Font.GothamBold
+            playerName.TextXAlignment = Enum.TextXAlignment.Left
+            
+            -- عداد الخروج
+            local leaveCountLabel = Instance.new("TextLabel", playerFrame)
+            leaveCountLabel.Size = UDim2.new(0.5, 0, 0, 25)
+            leaveCountLabel.Position = UDim2.new(0.2, 0, 0, 30)
+            leaveCountLabel.BackgroundTransparency = 1
+            leaveCountLabel.Text = "خروج " .. (PlayerLeaveCounts[userId] or 0)
+            leaveCountLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+            leaveCountLabel.TextSize = 12
+            leaveCountLabel.Font = Enum.Font.GothamBold
+            leaveCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+            
+            -- زر الحذف
+            local deleteButton = Instance.new("TextButton", playerFrame)
+            deleteButton.Size = UDim2.new(0, 30, 0, 30)
+            deleteButton.Position = UDim2.new(1, -35, 0, 15)
+            deleteButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+            deleteButton.Text = "✕"
+            deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+            deleteButton.TextSize = 16
+            deleteButton.Font = Enum.Font.GothamBold
+            Instance.new("UICorner", deleteButton).CornerRadius = UDim.new(0, 6)
+            
+            deleteButton.MouseButton1Click:Connect(function()
+                MasterCounterSelectedPlayers[userId] = nil
+                UpdateSelectedPlayersList()
+            end)
+            
+            -- جلب صورة اللاعب
+            pcall(function()
+                local thumb = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+                playerThumbnail.Image = thumb
+            end)
+        end
+    end
+    
+    -- وظيفة البحث وإضافة لاعب
+    searchButton.MouseButton1Click:Connect(function()
+        local searchTerm = searchBox.Text
+        if searchTerm == "" then return end
+        
+        local foundPlayers = FindPlayer(searchTerm)
+        for _, foundPlayer in ipairs(foundPlayers) do
+            if not MasterCounterSelectedPlayers[foundPlayer.UserId] then
+                MasterCounterSelectedPlayers[foundPlayer.UserId] = {
+                    Name = foundPlayer.Name,
+                    UserId = foundPlayer.UserId
+                }
+            end
+        end
+        
+        if #foundPlayers > 0 then
+            UpdateSelectedPlayersList()
+            searchBox.Text = ""
+        end
+    end)
+    
+    -- تحديث القائمة عند فتح النافذة
+    UpdateSelectedPlayersList()
+end
+
+local function ToggleMasterCounter()
+    if not MasterCounterGUI then
+        CreateMasterCounterGUI()
+    end
+    
+    MasterCounterOpen = not MasterCounterOpen
+    MasterCounterGUI.Enabled = MasterCounterOpen
+    
+    if MasterCounterOpen then
+        local function UpdateSelectedPlayersList()
+            if not MasterCounterFrame then return end
+            
+            local playersScroll = MasterCounterFrame:FindFirstChildWhichIsA("ScrollingFrame")
+            if not playersScroll then return end
+            
+            for _, child in ipairs(playersScroll:GetChildren()) do
+                if child:IsA("Frame") then
+                    child:Destroy()
+                end
+            end
+            
+            local playerCount = 0
+            for userId, playerData in pairs(MasterCounterSelectedPlayers) do
+                playerCount = playerCount + 1
+                local playerFrame = Instance.new("Frame", playersScroll)
+                playerFrame.Size = UDim2.new(1, -10, 0, 60)
+                playerFrame.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+                playerFrame.LayoutOrder = playerCount
+                Instance.new("UICorner", playerFrame).CornerRadius = UDim.new(0, 6)
+                
+                local playerThumbnail = Instance.new("ImageLabel", playerFrame)
+                playerThumbnail.Size = UDim2.new(0, 50, 0, 50)
+                playerThumbnail.Position = UDim2.new(0, 5, 0, 5)
+                playerThumbnail.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+                Instance.new("UICorner", playerThumbnail).CornerRadius = UDim.new(0, 6)
+                
+                local playerName = Instance.new("TextLabel", playerFrame)
+                playerName.Size = UDim2.new(0.5, 0, 0, 25)
+                playerName.Position = UDim2.new(0.2, 0, 0, 5)
+                playerName.BackgroundTransparency = 1
+                playerName.Text = playerData.Name
+                playerName.TextColor3 = Color3.fromRGB(255, 255, 255)
+                playerName.TextSize = 14
+                playerName.Font = Enum.Font.GothamBold
+                playerName.TextXAlignment = Enum.TextXAlignment.Left
+                
+                local leaveCountLabel = Instance.new("TextLabel", playerFrame)
+                leaveCountLabel.Size = UDim2.new(0.5, 0, 0, 25)
+                leaveCountLabel.Position = UDim2.new(0.2, 0, 0, 30)
+                leaveCountLabel.BackgroundTransparency = 1
+                leaveCountLabel.Text = "خروج " .. (PlayerLeaveCounts[userId] or 0)
+                leaveCountLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+                leaveCountLabel.TextSize = 12
+                leaveCountLabel.Font = Enum.Font.GothamBold
+                leaveCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+                
+                local deleteButton = Instance.new("TextButton", playerFrame)
+                deleteButton.Size = UDim2.new(0, 30, 0, 30)
+                deleteButton.Position = UDim2.new(1, -35, 0, 15)
+                deleteButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+                deleteButton.Text = "✕"
+                deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+                deleteButton.TextSize = 16
+                deleteButton.Font = Enum.Font.GothamBold
+                Instance.new("UICorner", deleteButton).CornerRadius = UDim.new(0, 6)
+                
+                deleteButton.MouseButton1Click:Connect(function()
+                    MasterCounterSelectedPlayers[userId] = nil
+                    UpdateSelectedPlayersList()
+                end)
+                
+                pcall(function()
+                    local thumb = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+                    playerThumbnail.Image = thumb
+                end)
+            end
+        end
+        
+        UpdateSelectedPlayersList()
+    end
+end
+
+-- إنشاء الواجهة
+if game.CoreGui:FindFirstChild("MrYesHackkGUI") then game.CoreGui.MrYesHackkGUI:Destroy() end
+local mainGUI = Instance.new("ScreenGui", game.CoreGui)
+mainGUI.Name = "سكربت مستر GUI"
+mainGUI.ResetOnSpawn = false
+local mainFrame = Instance.new("Frame", mainGUI)
+mainFrame.Size = UDim2.new(0, 340, 0, 350)
+mainFrame.Position = UDim2.new(0.5, -170, 0.5, -175)
+mainFrame.BackgroundColor3 = Color3.fromRGB(20, 25, 35)
+mainFrame.Active = true
+mainFrame.Draggable = true
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+local titleBar = Instance.new("Frame", mainFrame)
+titleBar.Size = UDim2.new(1, 0, 0, 40)
+titleBar.BackgroundColor3 = Color3.fromRGB(30, 35, 45)
+Instance.new("UICorner", titleBar).CornerRadius = UDim.new(0, 10)
+local titleLabel = Instance.new("TextLabel", titleBar)
+titleLabel.Size = UDim2.new(1, 0, 1, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "👑 سكربت مستر v4.5 Plus"
+titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+titleLabel.TextSize = 18
+titleLabel.Font = Enum.Font.GothamBold
+local closeButton = Instance.new("TextButton", titleBar)
+closeButton.Size = UDim2.new(0, 30, 0, 30)
+closeButton.Position = UDim2.new(0.9, 0, 0.05, 0)
+closeButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+closeButton.Text = "✕"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 16
+closeButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", closeButton).CornerRadius = UDim.new(0, 6)
+local contentFrame = Instance.new("Frame", mainFrame)
+contentFrame.Size = UDim2.new(1, -10, 1, -50)
+contentFrame.Position = UDim2.new(0, 5, 0, 45)
+contentFrame.BackgroundTransparency = 1
+local tabButtonsFrame = Instance.new("Frame", contentFrame)
+tabButtonsFrame.Size = UDim2.new(1, 0, 0, 30)
+tabButtonsFrame.BackgroundTransparency = 1
+local tabs = {}
+local currentTab = "main"
+
+local function CreateTabButton(name, text, xPosition)
+    local tabButton = Instance.new("TextButton", tabButtonsFrame)
+    tabButton.Size = UDim2.new(0.16, 0, 1, 0)
+    tabButton.Position = UDim2.new(xPosition, 0, 0, 0)
+    tabButton.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+    tabButton.Text = text
+    tabButton.TextColor3 = Color3.fromRGB(200, 200, 255)
+    tabButton.TextSize = 11
+    tabButton.Font = Enum.Font.GothamBold
+    tabButton.Name = name
+    Instance.new("UICorner", tabButton).CornerRadius = UDim.new(0, 6)
+    tabs[name] = Instance.new("ScrollingFrame", contentFrame)
+    tabs[name].ScrollBarThickness = 2
+    tabs[name].BackgroundTransparency = 1
+    tabs[name].CanvasSize = UDim2.new(0, 0, 0, 1000)
+    tabs[name].Size = UDim2.new(1, 0, 1, -45)
+    tabs[name].Position = UDim2.new(0, 0, 0, 35)
+    tabs[name].BackgroundTransparency = 1
+    tabs[name].Visible = false
+    return tabButton
+end
+
+local mainTabBtn = CreateTabButton("main", "🏠", 0)
+local playerTabBtn = CreateTabButton("player", "👤", 0.16)
+local commandsTabBtn = CreateTabButton("commands", "🎮", 0.32)
+local chatTabBtn = CreateTabButton("chat", "💬", 0.48)
+local toolsTabBtn = CreateTabButton("tools", "⚙️", 0.64)
+local plusTabBtn = CreateTabButton("plus", "👑", 0.80)
+tabs.main.Visible = true
+plusTabBtn.Visible = false
+
+local function SwitchTab(tabName)
+    currentTab = tabName
+    for name, tab in pairs(tabs) do
+        tab.Visible = (name == tabName)
+        local btn = tabButtonsFrame:FindFirstChild(name)
+        if btn then
+            if name == tabName then
+                btn.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+                btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            else
+                btn.BackgroundColor3 = Color3.fromRGB(40, 45, 60)
+                btn.TextColor3 = Color3.fromRGB(200, 200, 255)
+            end
+        end
+    end
+end
+
+-- التبويب الرئيسي
+local mainContent = tabs.main
+local function CreateSettingCard(parent, title, buttonText, yPos, buttonColor)
+    local card = Instance.new("Frame", parent)
+    card.Size = UDim2.new(1, -10, 0, 60)
+    card.Position = UDim2.new(0, 5, 0, yPos)
+    card.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0, 8)
+    local titleLabel = Instance.new("TextLabel", card)
+    titleLabel.Size = UDim2.new(0.6, 0, 0, 30)
+    titleLabel.Position = UDim2.new(0, 10, 0, 10)
+    titleLabel.BackgroundTransparency = 1
+    titleLabel.Text = title
+    titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    titleLabel.TextSize = 14
+    titleLabel.Font = Enum.Font.GothamBold
+    titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+    local button = Instance.new("TextButton", card)
+    button.Size = UDim2.new(0, 70, 0, 30)
+    button.Position = UDim2.new(1, -80, 0, 15)
+    button.BackgroundColor3 = buttonColor
+    button.Text = buttonText
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextSize = 12
+    button.Font = Enum.Font.GothamBold
+    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+    return card, button
+end
+
+local antiAFKCard, antiAFKButton = CreateSettingCard(mainContent, "🛡️ Anti AFK", "تفعيل", 5, Color3.fromRGB(60, 180, 100))
+local removeChatCard, removeChatButton = CreateSettingCard(mainContent, "💬 إخفاء الشات", "تفعيل", 60, Color3.fromRGB(180, 80, 60))
+local antiCopyCard, antiCopyButton = CreateSettingCard(mainContent, "🛡️ مضاد نسخ", "تفعيل", 115, Color3.fromRGB(150, 100, 200))
+local antiBangCard, antiBangButton = CreateSettingCard(mainContent, "🚀 مضاد بانج", "تفعيل", 170, Color3.fromRGB(255, 100, 100))
+
+-- مواقع مميزة
+local specialLocationsTitle = Instance.new("TextLabel", mainContent)
+specialLocationsTitle.Size = UDim2.new(1, -20, 0, 20)
+specialLocationsTitle.Position = UDim2.new(0, 10, 0, 230)
+specialLocationsTitle.BackgroundTransparency = 1
+specialLocationsTitle.Text = "📍 مواقع مميزة"
+specialLocationsTitle.TextColor3 = Color3.fromRGB(255, 215, 0)
+specialLocationsTitle.TextSize = 14
+specialLocationsTitle.Font = Enum.Font.GothamBold
+specialLocationsTitle.TextXAlignment = Enum.TextXAlignment.Left
+local locationsGrid = Instance.new("Frame", mainContent)
+locationsGrid.Size = UDim2.new(1, -20, 0, 110)
+locationsGrid.Position = UDim2.new(0, 10, 0, 255)
+locationsGrid.BackgroundTransparency = 1
+
+local function CreateLocationButton(parent, text, x, y, color)
+    local button = Instance.new("TextButton", parent)
+    button.Size = UDim2.new(0.48, 0, 0, 50)
+    button.Position = UDim2.new(x, 0, y, 0)
+    button.BackgroundColor3 = color
+    button.Text = text
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextSize = 11
+    button.Font = Enum.Font.GothamBold
+    Instance.new("UICorner", button).CornerRadius = UDim.new(0, 6)
+    return button
+end
+
+local chair1Button = CreateLocationButton(locationsGrid, "💺 تعليق كرسي 1", 0, 0, Color3.fromRGB(0, 150, 255))
+local chair2Button = CreateLocationButton(locationsGrid, "💺 تعليق كرسي 2", 0.52, 0, Color3.fromRGB(255, 150, 0))
+local voidButton = CreateLocationButton(locationsGrid, "🌀 ڤويد", 0, 0.55, Color3.fromRGB(180, 0, 255))
+local antiKillButton = CreateLocationButton(locationsGrid, "🛡️ قتل مضاد تفعيل", 0.52, 0.55, Color3.fromRGB(220, 60, 60))
+
+-- زر عداد مستر الجديد
+local masterCounterButton = CreateLocationButton(mainContent, "عداد مستر", 0.25, 0.67, Color3.fromRGB(255, 215, 0))
+masterCounterButton.Size = UDim2.new(0.5, 0, 0, 40)
+masterCounterButton.Position = UDim2.new(0.25, 0, 0, 370)
+
+-- تبويب اللاعب
+local playerContent = tabs.player
+local searchBox = Instance.new("TextBox", playerContent)
+searchBox.Size = UDim2.new(1, -20, 0, 35)
+searchBox.Position = UDim2.new(0, 10, 0, 5)
+searchBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+searchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+searchBox.PlaceholderText = "ابحث عن لاعب (اسم، عرض، ID)"
+searchBox.Text = ""
+searchBox.TextSize = 13
+searchBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", searchBox).CornerRadius = UDim.new(0, 6)
+local searchButton = Instance.new("TextButton", playerContent)
+searchButton.Size = UDim2.new(0.3, 0, 0, 30)
+searchButton.Position = UDim2.new(0.35, 0, 0, 42)
+searchButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+searchButton.Text = "🔍 بحث"
+searchButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+searchButton.TextSize = 13
+searchButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", searchButton).CornerRadius = UDim.new(0, 6)
+playerInfoLabel = Instance.new("TextLabel", playerContent)
+playerInfoLabel.Size = UDim2.new(1, -20, 0, 120)
+playerInfoLabel.Position = UDim2.new(0, 10, 0, 75)
+playerInfoLabel.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
+playerInfoLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+playerInfoLabel.TextSize = 12
+playerInfoLabel.Font = Enum.Font.Gotham
+playerInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+playerInfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+playerInfoLabel.TextWrapped = true
+Instance.new("UICorner", playerInfoLabel).CornerRadius = UDim.new(0, 8)
+local playerInfoPadding = Instance.new("UIPadding", playerInfoLabel)
+playerInfoPadding.PaddingLeft = UDim.new(0, 10)
+playerInfoPadding.PaddingTop = UDim.new(0, 10)
+
+local function CreateDanceSetting(parent, labelText, textBoxText, xPos, yPos, placeholder, minValue, maxValue)
+    local container = Instance.new("Frame", parent)
+    container.Size = UDim2.new(0.22, 0, 0, 45)
+    container.Position = UDim2.new(xPos, 0, yPos, 0)
+    container.BackgroundTransparency = 1
+    local label = Instance.new("TextLabel", container)
+    label.Size = UDim2.new(1, 0, 0, 20)
+    label.Position = UDim2.new(0, 0, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(200, 200, 255)
+    label.TextSize = 10
+    label.Font = Enum.Font.GothamBold
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    local textBox = Instance.new("TextBox", container)
+    textBox.Size = UDim2.new(1, 0, 0, 25)
+    textBox.Position = UDim2.new(0, 0, 0, 20)
+    textBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+    textBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+    textBox.Text = textBoxText
+    textBox.PlaceholderText = placeholder
+    textBox.TextSize = 10
+    textBox.Font = Enum.Font.Gotham
+    textBox.ClearTextOnFocus = false
+    Instance.new("UICorner", textBox).CornerRadius = UDim.new(0, 4)
+    textBox.FocusLost:Connect(function()
+        local value = tonumber(textBox.Text)
+        if value then
+            if minValue and value < minValue then value = minValue end
+            if maxValue and value > maxValue then value = maxValue end
+            textBox.Text = tostring(value)
+        else
+            textBox.Text = textBoxText
+        end
+    end)
+    return textBox
+end
+
+local bangTitle = Instance.new("TextLabel", playerContent)
+bangTitle.Size = UDim2.new(1, -20, 0, 20)
+bangTitle.Position = UDim2.new(0, 10, 0, 200)
+bangTitle.BackgroundTransparency = 1
+bangTitle.Text = "💥 بانج"
+bangTitle.TextColor3 = Color3.fromRGB(255, 150, 50)
+bangTitle.TextSize = 14
+bangTitle.Font = Enum.Font.GothamBold
+bangTitle.TextXAlignment = Enum.TextXAlignment.Left
+local bangSpeedBox = CreateDanceSetting(playerContent, "سرعة", "1.5", 0.05, 0.22, "1-10", 1, 10)
+local bangDistanceBox = CreateDanceSetting(playerContent, "مسافة", "200", 0.28, 0.22, "1-10000", 1, 10000)
+local bangHeightBox = CreateDanceSetting(playerContent, "ارتفاع", "0", 0.51, 0.22, "0-10000", 0, 10000)
+local bangOscillationBox = CreateDanceSetting(playerContent, "تذبذب", "1.5", 0.74, 0.22, "1-10x", 1, 10)
+local bangButton = Instance.new("TextButton", playerContent)
+bangButton.Size = UDim2.new(0.45, 0, 0, 25)
+bangButton.Position = UDim2.new(0.05, 0, 0, 270)
+bangButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+bangButton.Text = "💥 تفعيل بانج"
+bangButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+bangButton.TextSize = 11
+bangButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", bangButton).CornerRadius = UDim.new(0, 6)
+local headbangTitle = Instance.new("TextLabel", playerContent)
+headbangTitle.Size = UDim2.new(1, -20, 0, 20)
+headbangTitle.Position = UDim2.new(0, 10, 0, 305)
+headbangTitle.BackgroundTransparency = 1
+headbangTitle.Text = "💢 هيدبانج"
+headbangTitle.TextColor3 = Color3.fromRGB(255, 100, 150)
+headbangTitle.TextSize = 14
+headbangTitle.Font = Enum.Font.GothamBold
+headbangTitle.TextXAlignment = Enum.TextXAlignment.Left
+local headBangSpeedBox = CreateDanceSetting(playerContent, "سرعة", "1.5", 0.05, 0.33, "1-10", 1, 10)
+local headBangDistanceBox = CreateDanceSetting(playerContent, "مسافة", "200", 0.28, 0.33, "1-10000", 1, 10000)
+local headBangHeightBox = CreateDanceSetting(playerContent, "ارتفاع", "0", 0.51, 0.33, "0-10000", 0, 10000)
+local headBangOscillationBox = CreateDanceSetting(playerContent, "تذبذب", "1.5", 0.74, 0.33, "1-10x", 1, 10)
+local headBangButton = Instance.new("TextButton", playerContent)
+headBangButton.Size = UDim2.new(0.45, 0, 0, 25)
+headBangButton.Position = UDim2.new(0.05, 0, 0, 380)
+headBangButton.BackgroundColor3 = Color3.fromRGB(255, 50, 100)
+headBangButton.Text = "💢 تفعيل هيدبانج"
+headBangButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+headBangButton.TextSize = 11
+headBangButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", headBangButton).CornerRadius = UDim.new(0, 6)
+local stopDanceButton = Instance.new("TextButton", playerContent)
+stopDanceButton.Size = UDim2.new(0.45, 0, 0, 25)
+stopDanceButton.Position = UDim2.new(0.5, 0, 0, 380)
+stopDanceButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+stopDanceButton.Text = "⏹ إيقاف الرقصات"
+stopDanceButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopDanceButton.TextSize = 11
+stopDanceButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", stopDanceButton).CornerRadius = UDim.new(0, 6)
+local copyTitle = Instance.new("TextLabel", playerContent)
+copyTitle.Size = UDim2.new(1, -20, 0, 20)
+copyTitle.Position = UDim2.new(0, 10, 0, 415)
+copyTitle.BackgroundTransparency = 1
+copyTitle.Text = "📋 نسخ"
+copyTitle.TextColor3 = Color3.fromRGB(150, 200, 255)
+copyTitle.TextSize = 14
+copyTitle.Font = Enum.Font.GothamBold
+copyTitle.TextXAlignment = Enum.TextXAlignment.Left
+local copyButton = Instance.new("TextButton", playerContent)
+copyButton.Size = UDim2.new(0.3, 0, 0, 25)
+copyButton.Position = UDim2.new(0.05, 0, 0, 440)
+copyButton.BackgroundColor3 = Color3.fromRGB(150, 100, 200)
+copyButton.Text = "📋 انسخ عليه"
+copyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+copyButton.TextSize = 11
+copyButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", copyButton).CornerRadius = UDim.new(0, 6)
+local hangButton = Instance.new("TextButton", playerContent)
+hangButton.Size = UDim2.new(0.3, 0, 0, 25)
+hangButton.Position = UDim2.new(0.35, 0, 0, 440)
+hangButton.BackgroundColor3 = Color3.fromRGB(200, 100, 50)
+hangButton.Text = "🔗 علقه"
+hangButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+hangButton.TextSize = 11
+hangButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", hangButton).CornerRadius = UDim.new(0, 6)
+local nashkhNafButton = Instance.new("TextButton", playerContent)
+nashkhNafButton.Size = UDim2.new(0.3, 0, 0, 25)
+nashkhNafButton.Position = UDim2.new(0.65, 0, 0, 440)
+nashkhNafButton.BackgroundColor3 = Color3.fromRGB(200, 50, 100)
+nashkhNafButton.Text = "نسخ نف"
+nashkhNafButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+nashkhNafButton.TextSize = 11
+nashkhNafButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", nashkhNafButton).CornerRadius = UDim.new(0, 6)
+local controlTitle = Instance.new("TextLabel", playerContent)
+controlTitle.Size = UDim2.new(1, -20, 0, 20)
+controlTitle.Position = UDim2.new(0, 10, 0, 475)
+controlTitle.BackgroundTransparency = 1
+controlTitle.Text = "👁️ تحكم"
+controlTitle.TextColor3 = Color3.fromRGB(100, 200, 100)
+controlTitle.TextSize = 14
+controlTitle.Font = Enum.Font.GothamBold
+controlTitle.TextXAlignment = Enum.TextXAlignment.Left
+local viewButton = Instance.new("TextButton", playerContent)
+viewButton.Size = UDim2.new(0.3, 0, 0, 25)
+viewButton.Position = UDim2.new(0.05, 0, 0, 500)
+viewButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+viewButton.Text = "👁️ مشاهدة"
+viewButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+viewButton.TextSize = 11
+viewButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", viewButton).CornerRadius = UDim.new(0, 6)
+local teleportButton = Instance.new("TextButton", playerContent)
+teleportButton.Size = UDim2.new(0.3, 0, 0, 25)
+teleportButton.Position = UDim2.new(0.35, 0, 0, 500)
+teleportButton.BackgroundColor3 = Color3.fromRGB(100, 180, 100)
+teleportButton.Text = "📍 تنقل"
+teleportButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+teleportButton.TextSize = 11
+teleportButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", teleportButton).CornerRadius = UDim.new(0, 6)
+local stopViewButton = Instance.new("TextButton", playerContent)
+stopViewButton.Size = UDim2.new(0.3, 0, 0, 25)
+stopViewButton.Position = UDim2.new(0.65, 0, 0, 500)
+stopViewButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+stopViewButton.Text = "⏹ إيقاف مشاهدة"
+stopViewButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopViewButton.TextSize = 10
+stopViewButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", stopViewButton).CornerRadius = UDim.new(0, 6)
+local changePlayerButton = Instance.new("TextButton", playerContent)
+changePlayerButton.Size = UDim2.new(0.45, 0, 0, 25)
+changePlayerButton.Position = UDim2.new(0.05, 0, 0, 535)
+changePlayerButton.BackgroundColor3 = Color3.fromRGB(100, 150, 255)
+changePlayerButton.Text = "🔄 تغيير لاعب"
+changePlayerButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+changePlayerButton.TextSize = 11
+changePlayerButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", changePlayerButton).CornerRadius = UDim.new(0, 6)
+local samlaButton = Instance.new("TextButton", playerContent)
+samlaButton.Size = UDim2.new(0.45, 0, 0, 25)
+samlaButton.Position = UDim2.new(0.5, 0, 0, 535)
+samlaButton.BackgroundColor3 = Color3.fromRGB(100, 180, 100)
+samlaButton.Text = "✨ صمله"
+samlaButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+samlaButton.TextSize = 11
+samlaButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", samlaButton).CornerRadius = UDim.new(0, 6)
+local newControlsFrame = Instance.new("Frame", playerContent)
+newControlsFrame.Size = UDim2.new(1, -20, 0, 60)
+newControlsFrame.Position = UDim2.new(0, 10, 0, 570)
+newControlsFrame.BackgroundTransparency = 1
+local throwVoidButton = Instance.new("TextButton", newControlsFrame)
+throwVoidButton.Size = UDim2.new(0.48, 0, 0, 25)
+throwVoidButton.Position = UDim2.new(0, 0, 0, 0)
+throwVoidButton.BackgroundColor3 = Color3.fromRGB(180, 0, 255)
+throwVoidButton.Text = "🌀 إرميه بالڤويد"
+throwVoidButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+throwVoidButton.TextSize = 10
+throwVoidButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", throwVoidButton).CornerRadius = UDim.new(0, 6)
+local cuffButton = Instance.new("TextButton", newControlsFrame)
+cuffButton.Size = UDim2.new(0.48, 0, 0, 25)
+cuffButton.Position = UDim2.new(0.52, 0, 0, 0)
+cuffButton.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+cuffButton.Text = "🔗 كلبشه"
+cuffButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+cuffButton.TextSize = 10
+cuffButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", cuffButton).CornerRadius = UDim.new(0, 6)
+
+-- تبويب الأوامر
+local commandsContent = tabs.commands
+local commandBox = Instance.new("TextBox", commandsContent)
+commandBox.Size = UDim2.new(1, -20, 0, 35)
+commandBox.Position = UDim2.new(0, 10, 0, 5)
+commandBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+commandBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+commandBox.PlaceholderText = "اكتب الأمر (ابدأ بـ ;)"
+commandBox.Text = ""
+commandBox.TextSize = 13
+commandBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", commandBox).CornerRadius = UDim.new(0, 6)
+local speedBox = Instance.new("TextBox", commandsContent)
+speedBox.Size = UDim2.new(0.3, 0, 0, 25)
+speedBox.Position = UDim2.new(0.1, 0, 0, 45)
+speedBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+speedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+speedBox.Text = "1.0"
+speedBox.TextSize = 12
+speedBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", speedBox).CornerRadius = UDim.new(0, 4)
+local executeButton = Instance.new("TextButton", commandsContent)
+executeButton.Size = UDim2.new(0.45, 0, 0, 35)
+executeButton.Position = UDim2.new(0.05, 0, 0, 75)
+executeButton.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+executeButton.Text = "🚀 تنفيذ"
+executeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+executeButton.TextSize = 13
+executeButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", executeButton).CornerRadius = UDim.new(0, 6)
+local startSpamButton = Instance.new("TextButton", commandsContent)
+startSpamButton.Size = UDim2.new(0.45, 0, 0, 35)
+startSpamButton.Position = UDim2.new(0.5, 0, 0, 75)
+startSpamButton.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+startSpamButton.Text = "⚡ سبام"
+startSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+startSpamButton.TextSize = 13
+startSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", startSpamButton).CornerRadius = UDim.new(0, 6)
+local ultraSpamButton = Instance.new("TextButton", commandsContent)
+ultraSpamButton.Size = UDim2.new(0.45, 0, 0, 35)
+ultraSpamButton.Position = UDim2.new(0.05, 0, 0, 115)
+ultraSpamButton.BackgroundColor3 = Color3.fromRGB(180, 0, 255)
+ultraSpamButton.Text = "🚀 سبام فائق"
+ultraSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ultraSpamButton.TextSize = 12
+ultraSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", ultraSpamButton).CornerRadius = UDim.new(0, 6)
+local stopAllSpamButton = Instance.new("TextButton", commandsContent)
+stopAllSpamButton.Size = UDim2.new(0.45, 0, 0, 35)
+stopAllSpamButton.Position = UDim2.new(0.5, 0, 0, 115)
+stopAllSpamButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+stopAllSpamButton.Text = "⏹ ايقاف"
+stopAllSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopAllSpamButton.TextSize = 13
+stopAllSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", stopAllSpamButton).CornerRadius = UDim.new(0, 6)
+
+-- تبويب الشات
+local chatContent = tabs.chat
+local chatBox = Instance.new("TextBox", chatContent)
+chatBox.Size = UDim2.new(1, -20, 0, 50)
+chatBox.Position = UDim2.new(0, 10, 0, 5)
+chatBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+chatBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatBox.PlaceholderText = "اكتب رسالة الشات..."
+chatBox.Text = ""
+chatBox.TextSize = 13
+chatBox.Font = Enum.Font.Gotham
+chatBox.MultiLine = true
+Instance.new("UICorner", chatBox).CornerRadius = UDim.new(0, 6)
+
+local chatSpeedBox = Instance.new("TextBox", chatContent)
+chatSpeedBox.Size = UDim2.new(0.3, 0, 0, 25)
+chatSpeedBox.Position = UDim2.new(0.1, 0, 0, 60)
+chatSpeedBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+chatSpeedBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatSpeedBox.Text = "1.0"
+chatSpeedBox.TextSize = 12
+chatSpeedBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", chatSpeedBox).CornerRadius = UDim.new(0, 4)
+
+local sendButton = Instance.new("TextButton", chatContent)
+sendButton.Size = UDim2.new(0.45, 0, 0, 30)
+sendButton.Position = UDim2.new(0.05, 0, 0, 90)
+sendButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+sendButton.Text = "📤 إرسال"
+sendButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+sendButton.TextSize = 13
+sendButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", sendButton).CornerRadius = UDim.new(0, 6)
+
+local startChatSpamButton = Instance.new("TextButton", chatContent)
+startChatSpamButton.Size = UDim2.new(0.45, 0, 0, 30)
+startChatSpamButton.Position = UDim2.new(0.5, 0, 0, 90)
+startChatSpamButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+startChatSpamButton.Text = "🔥 سبام"
+startChatSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+startChatSpamButton.TextSize = 13
+startChatSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", startChatSpamButton).CornerRadius = UDim.new(0, 6)
+
+local ultraChatSpamButton = Instance.new("TextButton", chatContent)
+ultraChatSpamButton.Size = UDim2.new(0.45, 0, 0, 30)
+ultraChatSpamButton.Position = UDim2.new(0.05, 0, 0, 125)
+ultraChatSpamButton.BackgroundColor3 = Color3.fromRGB(180, 0, 255)
+ultraChatSpamButton.Text = "🚀 سبام فائق"
+ultraChatSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+ultraChatSpamButton.TextSize = 12
+ultraChatSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", ultraChatSpamButton).CornerRadius = UDim.new(0, 6)
+
+local stopChatSpamButton = Instance.new("TextButton", chatContent)
+stopChatSpamButton.Size = UDim2.new(0.45, 0, 0, 30)
+stopChatSpamButton.Position = UDim2.new(0.5, 0, 0, 125)
+stopChatSpamButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+stopChatSpamButton.Text = "⏹ إيقاف"
+stopChatSpamButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopChatSpamButton.TextSize = 13
+stopChatSpamButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", stopChatSpamButton).CornerRadius = UDim.new(0, 6)
+
+-- تبويب الأدوات
+local toolsContent = tabs.tools
+local membershipCodeBox = Instance.new("TextBox", toolsContent)
+membershipCodeBox.Size = UDim2.new(0.6, 0, 0, 30)
+membershipCodeBox.Position = UDim2.new(0.05, 0, 0, 5)
+membershipCodeBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+membershipCodeBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+membershipCodeBox.PlaceholderText = "أدخل كود العضوية"
+membershipCodeBox.Text = ""
+membershipCodeBox.TextSize = 13
+membershipCodeBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", membershipCodeBox).CornerRadius = UDim.new(0, 6)
+local membershipCodeButton = Instance.new("TextButton", toolsContent)
+membershipCodeButton.Size = UDim2.new(0.3, 0, 0, 30)
+membershipCodeButton.Position = UDim2.new(0.65, 0, 0, 5)
+membershipCodeButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+membershipCodeButton.Text = "تفعيل"
+membershipCodeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+membershipCodeButton.TextSize = 12
+membershipCodeButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", membershipCodeButton).CornerRadius = UDim.new(0, 6)
+local memoryButton = Instance.new("TextButton", toolsContent)
+memoryButton.Size = UDim2.new(0.9, 0, 0, 40)
+memoryButton.Position = UDim2.new(0.05, 0, 0, 40)
+memoryButton.BackgroundColor3 = Color3.fromRGB(100, 150, 255)
+memoryButton.Text = "🧹 تنظيف الذاكرة"
+memoryButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+memoryButton.TextSize = 14
+memoryButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", memoryButton).CornerRadius = UDim.new(0, 8)
+local uptimeLabel = Instance.new("TextLabel", toolsContent)
+uptimeLabel.Size = UDim2.new(0.9, 0, 0, 60)
+uptimeLabel.Position = UDim2.new(0.05, 0, 0, 85)
+uptimeLabel.BackgroundTransparency = 1
+uptimeLabel.Text = "⏰ مدة التواجد: 0 ثانية"
+uptimeLabel.TextColor3 = Color3.fromRGB(200, 200, 255)
+uptimeLabel.TextSize = 14
+uptimeLabel.Font = Enum.Font.GothamBold
+uptimeLabel.TextXAlignment = Enum.TextXAlignment.Left
+uptimeLabel.TextYAlignment = Enum.TextYAlignment.Top
+uptimeLabel.TextWrapped = true
+local serverInfoLabel = Instance.new("TextLabel", toolsContent)
+serverInfoLabel.Size = UDim2.new(0.9, 0, 0, 80)
+serverInfoLabel.Position = UDim2.new(0.05, 0, 0, 150)
+serverInfoLabel.BackgroundTransparency = 1
+serverInfoLabel.Text = "🌐 معلومات السيرفر:\n• المكان: " .. game.PlaceId .. "\n• عدد اللاعبين: " .. #Players:GetPlayers()
+serverInfoLabel.TextColor3 = Color3.fromRGB(180, 220, 255)
+serverInfoLabel.TextSize = 11
+serverInfoLabel.Font = Enum.Font.Gotham
+serverInfoLabel.TextXAlignment = Enum.TextXAlignment.Left
+serverInfoLabel.TextYAlignment = Enum.TextYAlignment.Top
+serverInfoLabel.TextWrapped = true
+
+-- تبويب البلس
+local plusContent = tabs.plus
+local plusSearchBox = Instance.new("TextBox", plusContent)
+plusSearchBox.Size = UDim2.new(1, -20, 0, 35)
+plusSearchBox.Position = UDim2.new(0, 10, 0, 5)
+plusSearchBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+plusSearchBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+plusSearchBox.PlaceholderText = "ابحث عن لاعب (اسم، عرض، ID)"
+plusSearchBox.Text = ""
+plusSearchBox.TextSize = 13
+plusSearchBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", plusSearchBox).CornerRadius = UDim.new(0, 6)
+local plusSearchButton = Instance.new("TextButton", plusContent)
+plusSearchButton.Size = UDim2.new(0.3, 0, 0, 30)
+plusSearchButton.Position = UDim2.new(0.35, 0, 0, 45)
+plusSearchButton.BackgroundColor3 = Color3.fromRGB(255, 215, 0)
+plusSearchButton.Text = "🔍 بحث"
+plusSearchButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+plusSearchButton.TextSize = 13
+plusSearchButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", plusSearchButton).CornerRadius = UDim.new(0, 6)
+plusPlayerInfo = Instance.new("TextLabel", plusContent)
+plusPlayerInfo.Size = UDim2.new(1, -20, 0, 50)
+plusPlayerInfo.Position = UDim2.new(0, 10, 0, 80)
+plusPlayerInfo.BackgroundTransparency = 1
+plusPlayerInfo.Text = "لم يتم تحديد لاعب"
+plusPlayerInfo.TextColor3 = Color3.fromRGB(200, 200, 255)
+plusPlayerInfo.TextSize = 12
+plusPlayerInfo.Font = Enum.Font.Gotham
+plusPlayerInfo.TextXAlignment = Enum.TextXAlignment.Left
+plusPlayerInfo.TextYAlignment = Enum.TextYAlignment.Top
+plusPlayerInfo.TextWrapped = true
+local chatControlBox = Instance.new("TextBox", plusContent)
+chatControlBox.Size = UDim2.new(0.6, 0, 0, 30)
+chatControlBox.Position = UDim2.new(0, 10, 0, 135)
+chatControlBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+chatControlBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatControlBox.PlaceholderText = "اكتب ما تريد أن يقوله اللاعب"
+chatControlBox.Text = ""
+chatControlBox.TextSize = 12
+chatControlBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", chatControlBox).CornerRadius = UDim.new(0, 6)
+local chatControlButton = Instance.new("TextButton", plusContent)
+chatControlButton.Size = UDim2.new(0.35, 0, 0, 30)
+chatControlButton.Position = UDim2.new(0.65, 0, 0, 135)
+chatControlButton.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
+chatControlButton.Text = "💬 تحكم شات"
+chatControlButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+chatControlButton.TextSize = 11
+chatControlButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", chatControlButton).CornerRadius = UDim.new(0, 6)
+local kickReasonBox = Instance.new("TextBox", plusContent)
+kickReasonBox.Size = UDim2.new(0.6, 0, 0, 30)
+kickReasonBox.Position = UDim2.new(0, 10, 0, 170)
+kickReasonBox.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+kickReasonBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+kickReasonBox.PlaceholderText = "سبب الطرد (اختياري)"
+kickReasonBox.Text = ""
+kickReasonBox.TextSize = 12
+kickReasonBox.Font = Enum.Font.Gotham
+Instance.new("UICorner", kickReasonBox).CornerRadius = UDim.new(0, 6)
+local kickButton = Instance.new("TextButton", plusContent)
+kickButton.Size = UDim2.new(0.35, 0, 0, 30)
+kickButton.Position = UDim2.new(0.65, 0, 0, 170)
+kickButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+kickButton.Text = "👢 طرد"
+kickButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+kickButton.TextSize = 11
+kickButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", kickButton).CornerRadius = UDim.new(0, 6)
+local kneelButton = Instance.new("TextButton", plusContent)
+kneelButton.Size = UDim2.new(0.9, 0, 0, 30)
+kneelButton.Position = UDim2.new(0.05, 0, 0.61, 0)
+kneelButton.BackgroundColor3 = Color3.fromRGB(150, 100, 200)
+kneelButton.Text = "🧎 خضعه"
+kneelButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+kneelButton.TextSize = 12
+kneelButton.Font = Enum.Font.GothamBold
+Instance.new("UICorner", kneelButton).CornerRadius = UDim.new(0, 6)
+
+-- تحديث المعلومات
+task.spawn(function()
+    while true do
+        uptimeLabel.Text = "⏰ مدة التواجد: " .. GetUptimeString()
+        serverInfoLabel.Text = string.format("🌐 معلومات السيرفر:\n• المكان: %s\n• عدد اللاعبين: %d", game.PlaceId, #Players:GetPlayers())
+        task.wait(1)
+    end
+end)
+
+-- نظام البحث
+local function UpdateSelectedPlayer(searchTerm)
+    if searchTerm == "" then
+        playerInfoLabel.Text = "🔍 ابحث عن لاعب باستخدام الاسم أو العرض أو ID"
+        SelectedPlayer = nil
+        return
+    end
+    local foundPlayers = FindPlayer(searchTerm)
+    if #foundPlayers == 0 then
+        playerInfoLabel.Text = "❌ لا يوجد لاعب بهذا الاسم"
+        SelectedPlayer = nil
+    elseif #foundPlayers == 1 then
+        SelectedPlayer = foundPlayers[1]
+        playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer)
+    else
+        SelectedPlayer = foundPlayers[1]
+        playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. string.format("\n\n⚠️ يوجد %d لاعبين مطابقين\n👤 تم اختيار: %s", #foundPlayers, SelectedPlayer.Name)
+    end
+end
+
+-- أحداث الأزرار
+chair1Button.MouseButton1Click:Connect(function()
+    TeleportToLocationAndBack(CFrame.new(1902, 20, 135), 1)
+end)
+
+chair2Button.MouseButton1Click:Connect(function()
+    TeleportToLocationAndBack(CFrame.new(1871, 20, 135), 1)
+end)
+
+voidButton.MouseButton1Click:Connect(function()
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if playerRoot then
+        playerRoot.CFrame = CFrame.new(2147483648, 944401, -2)
+    end
+end)
+
+antiKillButton.MouseButton1Click:Connect(function()
+    AntiKillActive = ToggleTeleportLocation(CFrame.new(1134, -271, 408), AntiKillActive, "AntiKillOriginalPosition", antiKillButton)
+end)
+
+antiBangButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then
+        playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً"
+        return
+    end
+    if not AntiBangLoopActive then
+        AntiBangLoopActive = true
+        antiBangButton.Text = "🔄 إيقاف"
+        antiBangButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+        AntiBangLoopTask = task.spawn(function()
+            local currentIndex = 1
+            while AntiBangLoopActive do
+                local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+                if playerRoot then
+                    playerRoot.CFrame = AntiBangLocations[currentIndex]
+                    task.wait(0.1) -- تغيير السرعة إلى 0.1
+                    currentIndex = currentIndex + 1
+                    if currentIndex > #AntiBangLocations then currentIndex = 1 end
+                else task.wait(1) end
+            end
+        end)
+    else
+        AntiBangLoopActive = false
+        antiBangButton.Text = "تفعيل"
+        antiBangButton.BackgroundColor3 = Color3.fromRGB(255, 100, 100)
+    end
+end)
+
+masterCounterButton.MouseButton1Click:Connect(function()
+    ToggleMasterCounter()
+end)
+
+throwVoidButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then
+        playerInfoLabel.Text = playerInfoLabel.Text .. "\n\n❌ الرجاء تحديد لاعب أولاً"
+        return
+    end
+    if IsNANPlayer(SelectedPlayer) then
+        playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه"
+        return
+    end
+    local success = ThrowToVoid(SelectedPlayer)
+    playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. (success and "\n\n🌀 تم كبش اللاعب وإرساله للڤويد!" or "\n\n❌ فشل في إرماء اللاعب بالڤويد")
+end)
+
+cuffButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then
+        playerInfoLabel.Text = playerInfoLabel.Text .. "\n\n❌ الرجاء تحديد لاعب أولاً"
+        return
+    end
+    if IsNANPlayer(SelectedPlayer) then
+        playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه"
+        return
+    end
+    local success = CuffPlayer(SelectedPlayer)
+    playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. (success and "\n\n🔗 تم كبش اللاعب بنجاح!" or "\n\n❌ فشل في كبش اللاعب")
+end)
+
+searchButton.MouseButton1Click:Connect(function() UpdateSelectedPlayer(searchBox.Text) end)
+changePlayerButton.MouseButton1Click:Connect(function() searchBox.Text = "" playerInfoLabel.Text = "🔍 ابحث عن لاعب جديد" SelectedPlayer = nil end)
+nashkhNafButton.MouseButton1Click:Connect(function() if SelectedPlayer then StartNashkhNaf(SelectedPlayer) playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n🚀 تم بدء نسخ نف 30 مرة!" end end)
+samlaButton.MouseButton1Click:Connect(function() SamlaCommand() playerInfoLabel.Text = playerInfoLabel.Text .. "\n\n✨ تم تنفيذ أوامر الصمله!" end)
+
+membershipCodeButton.MouseButton1Click:Connect(function()
+    if membershipCodeBox.Text == "QoheboPplQ196" then
+        MembershipActive = true
+        plusTabBtn.Visible = true
+        membershipCodeBox.Text = ""
+        membershipCodeBox.PlaceholderText = "تم تفعيل البلس!"
+        membershipCodeButton.Text = "👍 مفعل"
+        membershipCodeButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    else
+        membershipCodeBox.Text = ""
+        membershipCodeBox.PlaceholderText = "كود خاطئ!"
+    end
+end)
+
+plusSearchButton.MouseButton1Click:Connect(function()
+    local searchTerm = plusSearchBox.Text
+    if searchTerm == "" then plusPlayerInfo.Text = "🔍 ابحث عن لاعب" SelectedPlayerMembership = nil return end
+    local foundPlayers = FindPlayer(searchTerm)
+    if #foundPlayers == 0 then
+        plusPlayerInfo.Text = "❌ لا يوجد لاعب بهذا الاسم"
+        SelectedPlayerMembership = nil
+    elseif #foundPlayers == 1 then
+        SelectedPlayerMembership = foundPlayers[1]
+        plusPlayerInfo.Text = string.format("👤 اللاعب المحدد:\n• الاسم: %s\n• العرض: %s\n• ID: %s", SelectedPlayerMembership.Name, SelectedPlayerMembership.DisplayName, SelectedPlayerMembership.UserId)
+    else
+        SelectedPlayerMembership = foundPlayers[1]
+        plusPlayerInfo.Text = string.format("👤 اللاعب المحدد:\n• الاسم: %s\n• العرض: %s\n• ID: %s\n\n⚠️ يوجد %d لاعبين مطابقين", SelectedPlayerMembership.Name, SelectedPlayerMembership.DisplayName, SelectedPlayerMembership.UserId, #foundPlayers)
+    end
+end)
+
+chatControlButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayerMembership then plusPlayerInfo.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    if chatControlBox.Text == "" then plusPlayerInfo.Text = plusPlayerInfo.Text .. "\n\n❌ الرجاء كتابة رسالة" return end
+    ControlChat(SelectedPlayerMembership, chatControlBox.Text)
+    plusPlayerInfo.Text = plusPlayerInfo.Text .. "\n\n💬 تم جعل اللاعب يقول: " .. chatControlBox.Text
+end)
+
+kickButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayerMembership then plusPlayerInfo.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    KickPlayer(SelectedPlayerMembership, kickReasonBox.Text)
+    plusPlayerInfo.Text = plusPlayerInfo.Text .. "\n\n👢 تم طرد اللاعب"
+end)
+
+kneelButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayerMembership then plusPlayerInfo.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    ToggleKneel(SelectedPlayerMembership)
+    plusPlayerInfo.Text = plusPlayerInfo.Text .. "\n\n🧎 تم التحكم في خضوع اللاعب"
+end)
+
+antiAFKButton.MouseButton1Click:Connect(function()
+    if not AntiAFK then EnableAntiAFK() antiAFKButton.Text = "إيقاف" antiAFKButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    else DisableAntiAFK() antiAFKButton.Text = "تفعيل" antiAFKButton.BackgroundColor3 = Color3.fromRGB(60, 180, 100) end
+end)
+
+removeChatButton.MouseButton1Click:Connect(function()
+    if not NoChat then
+        NoChat = true
+        pcall(function() TCS.ChatWindowConfiguration.Enabled = false TCS.BubbleChatConfiguration.Enabled = false end)
+        removeChatButton.Text = "إلغاء" removeChatButton.BackgroundColor3 = Color3.fromRGB(100, 150, 255)
+    else
+        NoChat = false
+        removeChatButton.Text = "تفعيل" removeChatButton.BackgroundColor3 = Color3.fromRGB(180, 80, 60)
+    end
+end)
+
+antiCopyButton.MouseButton1Click:Connect(function()
+    if not AntiCopyActive then StartAntiCopy() antiCopyButton.Text = "إيقاف" antiCopyButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    else StopAntiCopy() antiCopyButton.Text = "تفعيل" antiCopyButton.BackgroundColor3 = Color3.fromRGB(150, 100, 200) end
+end)
+
+bangButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    StopBang()
+    BangSpeed = math.clamp(tonumber(bangSpeedBox.Text) or 1.5, 1, 10)
+    BangDistance = math.clamp(tonumber(bangDistanceBox.Text) or 200, 1, 10000)
+    BangHeight = math.clamp(tonumber(bangHeightBox.Text) or 0, 0, 10000)
+    BangOscillation = math.clamp(tonumber(bangOscillationBox.Text) or 1.5, 1, 10)
+    StartBang(SelectedPlayer)
+    playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n💥 تم تفعيل بانج مع الإعدادات الخاصة!"
+end)
+
+headBangButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    StopBang()
+    HeadBangSpeed = math.clamp(tonumber(headBangSpeedBox.Text) or 1.5, 1, 10)
+    HeadBangDistance = math.clamp(tonumber(headBangDistanceBox.Text) or 200, 1, 10000)
+    HeadBangHeight = math.clamp(tonumber(headBangHeightBox.Text) or 0, 0, 10000)
+    HeadBangOscillation = math.clamp(tonumber(headBangOscillationBox.Text) or 1.5, 1, 10)
+    StartHeadBang(SelectedPlayer)
+    playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n💢 تم تفعيل هيدبانج مع الإعدادات الخاصة!"
+end)
+
+stopDanceButton.MouseButton1Click:Connect(function() StopBang() if SelectedPlayer then playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n⏹ تم إيقاف الرقصات!" end end)
+
+copyButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    if IsNANPlayer(SelectedPlayer) then playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" return end
+    if not CopyCommandsActive then
+        StartCopyCommands(SelectedPlayer)
+        copyButton.Text = "⏸️ إيقاف" copyButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    else
+        StopCopyCommands()
+        copyButton.Text = "📋 انسخ عليه" copyButton.BackgroundColor3 = Color3.fromRGB(150, 100, 200)
+    end
+end)
+
+hangButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    if IsNANPlayer(SelectedPlayer) then playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n❌ اسف هذا نان لايمكن انسخ عليه وعلقه" return end
+    if not HangCommandsActive then
+        StartHangCommands(SelectedPlayer)
+        hangButton.Text = "⏸️ إيقاف" hangButton.BackgroundColor3 = Color3.fromRGB(220, 60, 60)
+    else
+        StopHangCommands()
+        hangButton.Text = "🔗 علقه" hangButton.BackgroundColor3 = Color3.fromRGB(200, 100, 50)
+    end
+end)
+
+viewButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    StartView(SelectedPlayer)
+    playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n👁️ تم تفعيل المشاهدة!"
+end)
+
+teleportButton.MouseButton1Click:Connect(function()
+    if not SelectedPlayer then playerInfoLabel.Text = "❌ الرجاء تحديد لاعب أولاً" return end
+    local targetRoot = SelectedPlayer.Character and SelectedPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if targetRoot and playerRoot then
+        playerRoot.CFrame = targetRoot.CFrame + Vector3.new(0, 3, 0)
+        playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n📍 تم التنقل إلى اللاعب!"
+    end
+end)
+
+stopViewButton.MouseButton1Click:Connect(function() StopView() if SelectedPlayer then playerInfoLabel.Text = GetPlayerInfo(SelectedPlayer) .. "\n\n⏹ تم إيقاف المشاهدة!" end end)
+
+executeButton.MouseButton1Click:Connect(function() if commandBox.Text ~= "" then ExecuteCommand(commandBox.Text) end end)
+
+startSpamButton.MouseButton1Click:Connect(function()
+    local cmd = commandBox.Text
+    if cmd == "" then return end
+    local speed = tonumber(speedBox.Text) or CommandSpamSpeed
+    if CommandSpamActive then
+        CommandSpamActive = false
+        startSpamButton.Text = "⚡ سبام" startSpamButton.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+    else
+        CommandSpamActive = true
+        local taskId = #spamTasks + 1
+        spamTasks[taskId] = task.spawn(function()
+            while CommandSpamActive do
+                ExecuteCommand(cmd)
+                local waitTime = math.clamp(speed, 0.00001, 10)
+                task.wait(waitTime)
+            end
+            spamTasks[taskId] = nil
+        end)
+        startSpamButton.Text = "⚡ نشط" startSpamButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    end
+end)
+
+ultraSpamButton.MouseButton1Click:Connect(function()
+    local cmd = commandBox.Text
+    if cmd == "" then return end
+    if CommandSpamActive then
+        CommandSpamActive = false
+        ultraSpamButton.Text = "🚀 سبام فائق" ultraSpamButton.BackgroundColor3 = Color3.fromRGB(180, 0, 255)
+    else
+        CommandSpamActive = true
+        local taskId = #spamTasks + 1
+        spamTasks[taskId] = task.spawn(function()
+            while CommandSpamActive do
+                ExecuteCommand(cmd)
+                task.wait(0.00001)
+            end
+            spamTasks[taskId] = nil
+        end)
+        ultraSpamButton.Text = "🚀 نشط" ultraSpamButton.BackgroundColor3 = Color3.fromRGB(0, 200, 100)
+    end
+end)
+
+stopAllSpamButton.MouseButton1Click:Connect(function()
+    CommandSpamActive = false
+    ChatSpamActive = false
+    spamTasks = {}
+    startSpamButton.Text = "⚡ سبام" startSpamButton.BackgroundColor3 = Color3.fromRGB(255, 150, 0)
+    ultraSpamButton.Text = "🚀 سبام فائق" ultraSpamButton.BackgroundColor3 = Color3.fromRGB(180, 0, 255)
+end)
+
+sendButton.MouseButton1Click:Connect(function() if chatBox.Text ~= "" then pcall(function() TCS.TextChannels.RBXGeneral:SendAsync(chatBox.Text) end) end end)
+
+startChatSpamButton.MouseButton1Click:Connect(function()
+    local msg = chatBox.Text
+    if msg == "" then return end
+    local speed = tonumber(chatSpeedBox.Text) or 1.0
+    if ChatSpamActive then
+        ChatSpamActive = false
+        startChatSpamButton.Text = "🔥 سبام" startChatSpamButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0)
+    else
+        ChatSpamActive = true
+        local taskId = #spamTasks + 1
+        spamTasks[taskId] = task.spawn(function()
+            while ChatSpamActive do
+                pcall(function() TCS.TextChannels.RBXGeneral:SendAsync(msg) end)
+                task.wait(speed)
+            end
+            spamTasks[taskId] = nil
+        end)
+        startChatSpamButton.Text = "⏸️ إيقاف" startChatSpamButton.BackgroundColor3 = Color3.fromRGB(255, 80, 0)
+    end
+end)
+
+stopChatSpamButton.MouseButton1Click:Connect(function() ChatSpamActive = false startChatSpamButton.Text = "🔥 سبام" startChatSpamButton.BackgroundColor3 = Color3.fromRGB(255, 100, 0) end)
+
+memoryButton.MouseButton1Click:Connect(function() collectgarbage() memoryButton.Text = "✅ تم!" task.wait(1) memoryButton.Text = "🧹 تنظيف الذاكرة" end)
+
+closeButton.MouseButton1Click:Connect(function()
+    CommandSpamActive, ChatSpamActive = false, false
+    StopBang() StopView() StopAntiCopy() StopCopyCommands() StopHangCommands()
+    AntiBangLoopActive = false
+    if AntiKillActive and AntiKillOriginalPosition then
+        local playerRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if playerRoot then playerRoot.CFrame = AntiKillOriginalPosition end
+    end
+    if afkConnection then afkConnection:Disconnect() end
+    if MasterCounterGUI then MasterCounterGUI:Destroy() end
+    mainGUI:Destroy()
+end)
+
+Players.PlayerRemoving:Connect(function(removingPlayer)
+    -- تحديث عداد اللاعب المحدد في التبويب الرئيسي
+    if SelectedPlayer == removingPlayer then
+        PlayerLeaveCounts[removingPlayer.UserId] = (PlayerLeaveCounts[removingPlayer.UserId] or 0) + 1
+        local count = PlayerLeaveCounts[removingPlayer.UserId]
+        ShowNotification("خرج اللاعب", string.format("🚪 اللاعب %s خرج من السيرف\nعدد مرات الهروب: %d مرة", removingPlayer.Name, count))
+        SelectedPlayer = nil
+    end
+    
+    -- تحديث عداد اللاعب المحدد في تبويب البلس
+    if SelectedPlayerMembership == removingPlayer then
+        plusPlayerInfo.Text = string.format("❌ اللاعب غادر السيرفر: %s", removingPlayer.Name)
+        SelectedPlayerMembership = nil
+    end
+    
+    -- تحديث عداد اللاعبين في عداد مستر
+    if MasterCounterSelectedPlayers[removingPlayer.UserId] then
+        PlayerLeaveCounts[removingPlayer.UserId] = (PlayerLeaveCounts[removingPlayer.UserId] or 0) + 1
+        if MasterCounterOpen and MasterCounterFrame then
+            local function UpdateSelectedPlayersList()
+                if not MasterCounterFrame then return end
+                
+                local playersScroll = MasterCounterFrame:FindFirstChildWhichIsA("ScrollingFrame")
+                if not playersScroll then return end
+                
+                for _, child in ipairs(playersScroll:GetChildren()) do
+                    if child:IsA("Frame") then
+                        child:Destroy()
+                    end
+                end
+                
+                local playerCount = 0
+                for userId, playerData in pairs(MasterCounterSelectedPlayers) do
+                    playerCount = playerCount + 1
+                    local playerFrame = Instance.new("Frame", playersScroll)
+                    playerFrame.Size = UDim2.new(1, -10, 0, 60)
+                    playerFrame.BackgroundColor3 = Color3.fromRGB(40, 45, 65)
+                    playerFrame.LayoutOrder = playerCount
+                    Instance.new("UICorner", playerFrame).CornerRadius = UDim.new(0, 6)
+                    
+                    local playerThumbnail = Instance.new("ImageLabel", playerFrame)
+                    playerThumbnail.Size = UDim2.new(0, 50, 0, 50)
+                    playerThumbnail.Position = UDim2.new(0, 5, 0, 5)
+                    playerThumbnail.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
+                    Instance.new("UICorner", playerThumbnail).CornerRadius = UDim.new(0, 6)
+                    
+                    local playerName = Instance.new("TextLabel", playerFrame)
+                    playerName.Size = UDim2.new(0.5, 0, 0, 25)
+                    playerName.Position = UDim2.new(0.2, 0, 0, 5)
+                    playerName.BackgroundTransparency = 1
+                    playerName.Text = playerData.Name
+                    playerName.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    playerName.TextSize = 14
+                    playerName.Font = Enum.Font.GothamBold
+                    playerName.TextXAlignment = Enum.TextXAlignment.Left
+                    
+                    local leaveCountLabel = Instance.new("TextLabel", playerFrame)
+                    leaveCountLabel.Size = UDim2.new(0.5, 0, 0, 25)
+                    leaveCountLabel.Position = UDim2.new(0.2, 0, 0, 30)
+                    leaveCountLabel.BackgroundTransparency = 1
+                    leaveCountLabel.Text = "خروج " .. (PlayerLeaveCounts[userId] or 0)
+                    leaveCountLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
+                    leaveCountLabel.TextSize = 12
+                    leaveCountLabel.Font = Enum.Font.GothamBold
+                    leaveCountLabel.TextXAlignment = Enum.TextXAlignment.Left
+                    
+                    local deleteButton = Instance.new("TextButton", playerFrame)
+                    deleteButton.Size = UDim2.new(0, 30, 0, 30)
+                    deleteButton.Position = UDim2.new(1, -35, 0, 15)
+                    deleteButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+                    deleteButton.Text = "X"
+                    deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    deleteButton.TextSize = 16
+                    deleteButton.Font = Enum.Font.GothamBold
+                    Instance.new("UICorner", deleteButton).CornerRadius = UDim.new(0, 6)
+                    
+                    deleteButton.MouseButton1Click:Connect(function()
+                        MasterCounterSelectedPlayers[userId] = nil
+                        UpdateSelectedPlayersList()
+                    end)
+                    
+                    pcall(function()
+                        local thumb = Players:GetUserThumbnailAsync(userId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size420x420)
+                        playerThumbnail.Image = thumb
+                    end)
+                end
+            end
+            
+            UpdateSelectedPlayersList()
+        end
+    end
+end)
+
+mainTabBtn.MouseButton1Click:Connect(function() SwitchTab("main") end)
+playerTabBtn.MouseButton1Click:Connect(function() SwitchTab("player") if not SelectedPlayer then playerInfoLabel.Text = "🔍 ابحث عن لاعب باستخدام الاسم أو العرض أو ID" end end)
+commandsTabBtn.MouseButton1Click:Connect(function() SwitchTab("commands") end)
+chatTabBtn.MouseButton1Click:Connect(function() SwitchTab("chat") end)
+toolsTabBtn.MouseButton1Click:Connect(function() SwitchTab("tools") end)
+plusTabBtn.MouseButton1Click:Connect(function() if MembershipActive then SwitchTab("plus") plusSearchBox.Text = "" end end)
+
+local UIS = game:GetService("UserInputService")
+UIS.InputBegan:Connect(function(input) if input.KeyCode == Enum.KeyCode.F1 then mainFrame.Visible = not mainFrame.Visible end end)
+
+player.CharacterAdded:Connect(function()
+    if BangActive or HeadBangActive then
+        task.wait(1)
+        if BangActive then PlayDanceAnimation(BangSpeed)
+        elseif HeadBangActive then PlayDanceAnimation(HeadBangSpeed) end
+    end
+end)
+
+-- إعدادات الحقول
+bangSpeedBox.FocusLost:Connect(function() local s = tonumber(bangSpeedBox.Text) BangSpeed = s and math.clamp(s, 1, 10) or 1.5 bangSpeedBox.Text = tostring(BangSpeed) end)
+bangDistanceBox.FocusLost:Connect(function() local d = tonumber(bangDistanceBox.Text) BangDistance = d and math.clamp(d, 1, 10000) or 200 bangDistanceBox.Text = tostring(BangDistance) end)
+bangHeightBox.FocusLost:Connect(function() local h = tonumber(bangHeightBox.Text) BangHeight = h and math.clamp(h, 0, 10000) or 0 bangHeightBox.Text = tostring(BangHeight) end)
+bangOscillationBox.FocusLost:Connect(function() local o = tonumber(bangOscillationBox.Text) BangOscillation = o and math.clamp(o, 1, 10) or 1.5 bangOscillationBox.Text = tostring(BangOscillation) end)
+
+headBangSpeedBox.FocusLost:Connect(function() local s = tonumber(headBangSpeedBox.Text) HeadBangSpeed = s and math.clamp(s, 1, 10) or 1.5 headBangSpeedBox.Text = tostring(HeadBangSpeed) end)
+headBangDistanceBox.FocusLost:Connect(function() local d = tonumber(headBangDistanceBox.Text) HeadBangDistance = d and math.clamp(d, 1, 10000) or 200 headBangDistanceBox.Text = tostring(HeadBangDistance) end)
+headBangHeightBox.FocusLost:Connect(function() local h = tonumber(headBangHeightBox.Text) HeadBangHeight = h and math.clamp(h, 0, 10000) or 0 headBangHeightBox.Text = tostring(HeadBangHeight) end)
+headBangOscillationBox.FocusLost:Connect(function() local o = tonumber(headBangOscillationBox.Text) HeadBangOscillation = o and math.clamp(o, 1, 10) or 1.5 headBangOscillationBox.Text = tostring(HeadBangOscillation) end)
+
+speedBox.FocusLost:Connect(function() local s = tonumber(speedBox.Text) CommandSpamSpeed = s and math.clamp(s, 0.00001, 10) or 1.0 speedBox.Text = tostring(CommandSpamSpeed) end)
+chatSpeedBox.FocusLost:Connect(function() local s = tonumber(chatSpeedBox.Text) chatSpeedBox.Text = s and tostring(math.clamp(s, 0.1, 10)) or "1.0" end)
