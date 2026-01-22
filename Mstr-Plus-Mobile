@@ -585,7 +585,7 @@ local function CreateMasterCounterGUI()
     closeButton.Size = UDim2.new(0, 30, 0, 30)
     closeButton.Position = UDim2.new(0.9, 0, 0.05, 0)
     closeButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-    closeButton.Text = "✕"
+    closeButton.Text = "X"
     closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
     closeButton.TextSize = 16
     closeButton.Font = Enum.Font.GothamBold
@@ -692,7 +692,7 @@ local function CreateMasterCounterGUI()
             deleteButton.Size = UDim2.new(0, 30, 0, 30)
             deleteButton.Position = UDim2.new(1, -35, 0, 15)
             deleteButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-            deleteButton.Text = "✕"
+            deleteButton.Text = "X"
             deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
             deleteButton.TextSize = 16
             deleteButton.Font = Enum.Font.GothamBold
@@ -796,7 +796,7 @@ local function ToggleMasterCounter()
                 deleteButton.Size = UDim2.new(0, 30, 0, 30)
                 deleteButton.Position = UDim2.new(1, -35, 0, 15)
                 deleteButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-                deleteButton.Text = "✕"
+                deleteButton.Text = "X"
                 deleteButton.TextColor3 = Color3.fromRGB(255, 255, 255)
                 deleteButton.TextSize = 16
                 deleteButton.Font = Enum.Font.GothamBold
@@ -845,7 +845,7 @@ local closeButton = Instance.new("TextButton", titleBar)
 closeButton.Size = UDim2.new(0, 30, 0, 30)
 closeButton.Position = UDim2.new(0.9, 0, 0.05, 0)
 closeButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-closeButton.Text = "✕"
+closeButton.Text = "X"
 closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
 closeButton.TextSize = 16
 closeButton.Font = Enum.Font.GothamBold
